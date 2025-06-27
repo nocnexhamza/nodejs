@@ -1,6 +1,9 @@
 # Use a lightweight Node.js image
 FROM node:18-alpine
 
+# Manually create the app directory first
+RUN mkdir -p /app
+
 # Copy application code to /app
 COPY . /app
 
