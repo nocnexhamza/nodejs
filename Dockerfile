@@ -1,21 +1,9 @@
-# Use a lightweight Node.js image
 FROM node:18-alpine
 
-# Manually create the app directory first
 RUN mkdir -p /app
-
-# Copy application code to /app
 COPY . /app
 
-# Set working directory
-WORKDIR /app
+RUN cd /app && npm install
 
-# Install dependencies
-RUN npm install
-
-# Expose app port (adjust if different)
 EXPOSE 5000
-
-# Start the application
-CMD ["node", "index.js"]
-
+CMD ["node", "/app/index.js"]
