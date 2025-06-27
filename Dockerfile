@@ -1,20 +1,7 @@
-# Use official Node.js 18 Alpine image
-FROM node:18-alpine
-
-# Create and set working directory
-WORKDIR /app
-
-# Copy package files first to leverage Docker cache
+FROM node:18-slim
+WORKDIR /usr/src/app
 COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy all application files
+RUN npm ci --only=production
 COPY . .
-
-# Expose the port the app runs on
 EXPOSE 3000
-
-# Command to run the application
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
