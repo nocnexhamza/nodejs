@@ -1,9 +1,9 @@
 FROM node:18-alpine
 
-WORKDIR /app
-COPY . .
+RUN mkdir -p /app
+COPY . /app
 
-RUN npm install
+RUN cd /app && npm install
 
 EXPOSE 5000
-CMD ["node", "index.js"]
+CMD ["node", "/app/index.js"]
