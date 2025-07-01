@@ -9,7 +9,7 @@ metadata:
     jenkins: agent
 spec:
   securityContext:
-    runAsUser: 0
+    runAsUser: 1000  # Changed from root for security
   dnsPolicy: None
   dnsConfig:
     nameservers:
@@ -21,7 +21,7 @@ spec:
       args: ['$(JENKINS_SECRET)', '$(JENKINS_NAME)']
       tty: true
       securityContext:
-        privileged: true
+        privileged: false  # Changed from true for security
       volumeMounts:
         - name: workspace-volume
           mountPath: /home/jenkins/agent
@@ -34,6 +34,10 @@ spec:
       volumeMounts:
         - name: workspace-volume
           mountPath: /home/jenkins/agent
+    - name: kubectl
+      image: bitnami/kubectl:latest
+      command: ['cat']
+      tty: true
   volumes:
     - name: workspace-volume
       emptyDir: {}
@@ -44,7 +48,6 @@ spec:
   }
 
   environment {
-    // Updated to use "nocnex/nodejs-app-v2"
     DOCKER_IMAGE = "nocnex/nodejs-app-v2"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "default"
@@ -72,15 +75,25 @@ spec:
     stage('Build & Push Image') {
       steps {
         container('jnlp') {
-          withCredentials([usernamePassword(
-            credentialsId: 'dockerhublogin',
-            usernameVariable: 'DOCKER_USER',
-            passwordVariable: 'DOCKER_PASS'
-          )]) {
+          withCredentials([
+            usernamePassword(
+              credentialsId: 'dockerhublogin',
+              usernameVariable: 'DOCKER_USER',
+              passwordVariable: 'DOCKER_PASS'
+            ),
+            file(
+              credentialsId: 'kubernetes_file',
+              variable: 'KUBECONFIG'
+            )
+          ]) {
             sh '''
-              # Debug information
+              # Set up kubeconfig
+              mkdir -p ~/.kube
+              cp "$KUBECONFIG" ~/.kube/config
+              chmod 600 ~/.kube/config
+
+              # Build and push image
               echo "Building image: ${REGISTRY}/${DOCKER_IMAGE}:${BUILD_NUMBER}"
-              echo "Using Docker Hub username: $DOCKER_USER"
               
               # Configure BuildKit
               mkdir -p /etc/buildkit
@@ -97,29 +110,15 @@ EOF
               buildkitd --config /etc/buildkit/buildkitd.toml &
               sleep 5
 
-              # Manual Docker Hub login test
-              echo "Testing Docker Hub credentials..."
-              docker login -u $DOCKER_USER -p $DOCKER_PASS docker.io
-              
-              # Create repository if needed
-              echo "Creating repository if needed..."
-              curl -u "$DOCKER_USER:$DOCKER_PASS" -X POST \
-                "https://hub.docker.com/v2/repositories/${DOCKER_IMAGE}/" \
-                -H "Content-Type: application/json" \
-                -d '{"is_private": false}' || echo "Repository creation may have failed or already exists"
-              
-              # Wait to ensure repository is ready
-              sleep 3
-
               # Build and push image
-              buildctl build \
-                --frontend dockerfile.v0 \
-                --local context=. \
-                --local dockerfile=. \
-                --output type=image,name=docker.io/${DOCKER_IMAGE}:${BUILD_NUMBER},push=true \
-                --export-cache type=local,dest=/tmp/buildkit-cache \
-                --import-cache type=local,src=/tmp/buildkit-cache \
-                --opt registry.username=${DOCKER_USER} \
+              buildctl build \\
+                --frontend dockerfile.v0 \\
+                --local context=. \\
+                --local dockerfile=. \\
+                --output type=image,name=docker.io/${DOCKER_IMAGE}:${BUILD_NUMBER},push=true \\
+                --export-cache type=local,dest=/tmp/buildkit-cache \\
+                --import-cache type=local,src=/tmp/buildkit-cache \\
+                --opt registry.username=${DOCKER_USER} \\
                 --opt registry.password=${DOCKER_PASS}
             '''
           }
@@ -129,12 +128,17 @@ EOF
 
     stage('Deploy to Kubernetes') {
       steps {
-        container('jnlp') {
-          withCredentials([kubeconfigFile(
+        container('kubectl') {
+          withCredentials([file(
             credentialsId: 'kubernetes_file',
-            variable: 'kubernetes_file'
+            variable: 'KUBECONFIG'
           )]) {
             sh '''
+              # Set up kubeconfig
+              mkdir -p ~/.kube
+              cp "$KUBECONFIG" ~/.kube/config
+              chmod 600 ~/.kube/config
+
               kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -149,7 +153,7 @@ spec:
   template:
     metadata:
       labels:
-        app: nodejs
+        app: nodejs-app-v2
     spec:
       containers:
       - name: nodejs-app-v2
@@ -171,7 +175,7 @@ metadata:
   namespace: ${KUBE_NAMESPACE}
 spec:
   selector:
-    app: nodejs
+    app: nodejs-app-v2
   ports:
     - protocol: TCP
       port: 80
@@ -194,9 +198,16 @@ EOF
       }
     }
     success {
-      container('jnlp') {
-        withCredentials([kubeconfigFile(credentialsId: 'kubernetes_file', variable: 'kubernetes_file')]) {
+      container('kubectl') {
+        withCredentials([file(
+          credentialsId: 'kubernetes_file',
+          variable: 'KUBECONFIG'
+        )]) {
           sh '''
+            mkdir -p ~/.kube
+            cp "$KUBECONFIG" ~/.kube/config
+            chmod 600 ~/.kube/config
+            
             echo "Deployment successful!"
             kubectl get svc nodejs-service -n ${KUBE_NAMESPACE}
           '''
@@ -204,14 +215,19 @@ EOF
       }
     }
     failure {
-      container('jnlp') {
-        withCredentials([kubeconfigFile(credentialsId: 'kubernetes_file', variable: 'kubernetes_file')]) {
+      container('kubectl') {
+        withCredentials([file(
+          credentialsId: 'kubernetes_file',
+          variable: 'KUBECONFIG'
+        )]) {
           sh '''
+            mkdir -p ~/.kube
+            cp "$KUBECONFIG" ~/.kube/config
+            chmod 600 ~/.kube/config
+            
             echo "Deployment failed. Checking logs:"
             kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE}
-            kubectl logs -l app=nodejs -n ${KUBE_NAMESPACE} --tail=50
-            echo "BuildKit logs:"
-            buildkitd --debug 2>&1 | tail -n 50
+            kubectl logs -l app=nodejs-app-v2 -n ${KUBE_NAMESPACE} --tail=50
           '''
         }
       }
