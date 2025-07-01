@@ -145,14 +145,14 @@ spec:
   replicas: 3
   selector:
     matchLabels:
-      app: nodejs
+      app: nodejs-app-v2
   template:
     metadata:
       labels:
         app: nodejs
     spec:
       containers:
-      - name: nodejs-app
+      - name: nodejs-app-v2
         image: docker.io/${DOCKER_IMAGE}:${BUILD_NUMBER}
         ports:
         - containerPort: 3000
