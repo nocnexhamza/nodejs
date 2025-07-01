@@ -183,7 +183,7 @@ spec:
   type: LoadBalancer
 EOF
 
-              kubectl rollout status deployment/nodejs-app -n ${KUBE_NAMESPACE} --timeout=120s
+              kubectl rollout status deployment/nodejs-app-v2 -n ${KUBE_NAMESPACE} --timeout=120s
             '''
           }
         }
@@ -226,7 +226,7 @@ EOF
             chmod 600 ~/.kube/config
             
             echo "Deployment failed. Checking logs:"
-            kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE}
+            kubectl describe deployment/nodejs-app-v2 -n ${KUBE_NAMESPACE}
             kubectl logs -l app=nodejs-app-v2 -n ${KUBE_NAMESPACE} --tail=50
           '''
         }
