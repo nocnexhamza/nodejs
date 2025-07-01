@@ -9,7 +9,7 @@ metadata:
     jenkins: agent
 spec:
   securityContext:
-    runAsUser: 1000  # Changed from root for security
+    runAsUser: 1000
   dnsPolicy: None
   dnsConfig:
     nameservers:
@@ -20,8 +20,6 @@ spec:
       image: nocnex/jenkins-agent:nerdctlv4
       args: ['$(JENKINS_SECRET)', '$(JENKINS_NAME)']
       tty: true
-      securityContext:
-        privileged: false  # Changed from true for security
       volumeMounts:
         - name: workspace-volume
           mountPath: /home/jenkins/agent
@@ -51,6 +49,7 @@ spec:
     DOCKER_IMAGE = "nocnex/nodejs-app-v2"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "default"
+    KUBECONFIG = "/home/jenkins/.kube/config"
   }
 
   stages {
@@ -80,19 +79,9 @@ spec:
               credentialsId: 'dockerhublogin',
               usernameVariable: 'DOCKER_USER',
               passwordVariable: 'DOCKER_PASS'
-            ),
-            file(
-              credentialsId: 'kubernetes_file',
-              variable: 'KUBECONFIG'
             )
           ]) {
             sh '''
-              # Set up kubeconfig
-              mkdir -p ~/.kube
-              cp "$KUBECONFIG" ~/.kube/config
-              chmod 600 ~/.kube/config
-
-              # Build and push image
               echo "Building image: ${REGISTRY}/${DOCKER_IMAGE}:${BUILD_NUMBER}"
               
               # Configure BuildKit
@@ -106,11 +95,9 @@ spec:
   insecure = false
 EOF
 
-              # Start BuildKit daemon
               buildkitd --config /etc/buildkit/buildkitd.toml &
               sleep 5
 
-              # Build and push image
               buildctl build \\
                 --frontend dockerfile.v0 \\
                 --local context=. \\
@@ -131,14 +118,15 @@ EOF
         container('kubectl') {
           withCredentials([file(
             credentialsId: 'kubernetes_file',
-            variable: 'KUBECONFIG'
+            variable: 'KUBECONFIG_FILE'
           )]) {
             sh '''
-              # Set up kubeconfig
+              # Set up kubeconfig properly
               mkdir -p ~/.kube
-              cp "$KUBECONFIG" ~/.kube/config
-              chmod 600 ~/.kube/config
+              cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
+              chmod 600 "${KUBECONFIG}"
 
+              echo "Applying deployment..."
               kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -149,14 +137,14 @@ spec:
   replicas: 3
   selector:
     matchLabels:
-      app: nodejs-app-v2
+      app: nodejs-app
   template:
     metadata:
       labels:
-        app: nodejs-app-v2
+        app: nodejs-app
     spec:
       containers:
-      - name: nodejs-app-v2
+      - name: nodejs-app
         image: docker.io/${DOCKER_IMAGE}:${BUILD_NUMBER}
         ports:
         - containerPort: 3000
@@ -175,7 +163,7 @@ metadata:
   namespace: ${KUBE_NAMESPACE}
 spec:
   selector:
-    app: nodejs-app-v2
+    app: nodejs-app
   ports:
     - protocol: TCP
       port: 80
@@ -183,7 +171,8 @@ spec:
   type: LoadBalancer
 EOF
 
-              kubectl rollout status deployment/nodejs-app-v2 -n ${KUBE_NAMESPACE} --timeout=120s
+              echo "Waiting for deployment to complete..."
+              kubectl rollout status deployment/nodejs-app -n ${KUBE_NAMESPACE} --timeout=120s
             '''
           }
         }
@@ -201,15 +190,15 @@ EOF
       container('kubectl') {
         withCredentials([file(
           credentialsId: 'kubernetes_file',
-          variable: 'KUBECONFIG'
+          variable: 'KUBECONFIG_FILE'
         )]) {
           sh '''
             mkdir -p ~/.kube
-            cp "$KUBECONFIG" ~/.kube/config
-            chmod 600 ~/.kube/config
+            cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
+            chmod 600 "${KUBECONFIG}"
             
             echo "Deployment successful!"
-            kubectl get svc nodejs-service -n ${KUBE_NAMESPACE}
+            kubectl get deployments,svc -n ${KUBE_NAMESPACE}
           '''
         }
       }
@@ -218,16 +207,24 @@ EOF
       container('kubectl') {
         withCredentials([file(
           credentialsId: 'kubernetes_file',
-          variable: 'KUBECONFIG'
+          variable: 'KUBECONFIG_FILE'
         )]) {
           sh '''
             mkdir -p ~/.kube
-            cp "$KUBECONFIG" ~/.kube/config
-            chmod 600 ~/.kube/config
+            cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
+            chmod 600 "${KUBECONFIG}"
             
-            echo "Deployment failed. Checking logs:"
-            kubectl describe deployment/nodejs-app-v2 -n ${KUBE_NAMESPACE}
-            kubectl logs -l app=nodejs-app-v2 -n ${KUBE_NAMESPACE} --tail=50
+            echo "=== Deployment failed. Cluster status ==="
+            kubectl get all -n ${KUBE_NAMESPACE}
+            
+            echo "=== Deployment description ==="
+            kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE} || true
+            
+            echo "=== Pod logs ==="
+            kubectl logs -l app=nodejs-app -n ${KUBE_NAMESPACE} --tail=50 || true
+            
+            echo "=== Events ==="
+            kubectl get events -n ${KUBE_NAMESPACE} --sort-by='.lastTimestamp' | tail -n 20 || true
           '''
         }
       }
