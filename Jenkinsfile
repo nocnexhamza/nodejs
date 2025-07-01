@@ -10,6 +10,7 @@ metadata:
 spec:
   securityContext:
     runAsUser: 1000
+    fsGroup: 1000
   dnsPolicy: None
   dnsConfig:
     nameservers:
@@ -25,6 +26,8 @@ spec:
           mountPath: /home/jenkins/agent
         - name: buildkit-cache
           mountPath: /tmp/buildkit-cache
+        - name: kube-config
+          mountPath: /home/jenkins/.kube
     - name: node
       image: node:18-slim
       command: ['cat']
@@ -36,10 +39,15 @@ spec:
       image: bitnami/kubectl:latest
       command: ['cat']
       tty: true
+      volumeMounts:
+        - name: kube-config
+          mountPath: /home/jenkins/.kube
   volumes:
     - name: workspace-volume
       emptyDir: {}
     - name: buildkit-cache
+      emptyDir: {}
+    - name: kube-config
       emptyDir: {}
 '''
     }
@@ -50,6 +58,7 @@ spec:
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "default"
     KUBECONFIG = "/home/jenkins/.kube/config"
+    BUILDKIT_CONFIG_DIR = "/tmp/buildkit-config"
   }
 
   stages {
@@ -84,9 +93,9 @@ spec:
             sh '''
               echo "Building image: ${REGISTRY}/${DOCKER_IMAGE}:${BUILD_NUMBER}"
               
-              # Configure BuildKit
-              mkdir -p /etc/buildkit
-              cat <<EOF > /etc/buildkit/buildkitd.toml
+              # Configure BuildKit in user-writable directory
+              mkdir -p ${BUILDKIT_CONFIG_DIR}
+              cat <<EOF > ${BUILDKIT_CONFIG_DIR}/buildkitd.toml
 [worker.containerd]
   namespace = "buildkit"
   snapshotter = "overlayfs"
@@ -95,7 +104,7 @@ spec:
   insecure = false
 EOF
 
-              buildkitd --config /etc/buildkit/buildkitd.toml &
+              buildkitd --config ${BUILDKIT_CONFIG_DIR}/buildkitd.toml &
               sleep 5
 
               buildctl build \\
@@ -121,8 +130,8 @@ EOF
             variable: 'KUBECONFIG_FILE'
           )]) {
             sh '''
-              # Set up kubeconfig properly
-              mkdir -p ~/.kube
+              # Ensure .kube directory exists and has correct permissions
+              mkdir -p /home/jenkins/.kube
               cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
               chmod 600 "${KUBECONFIG}"
 
@@ -171,7 +180,7 @@ spec:
   type: LoadBalancer
 EOF
 
-              echo "Waiting for deployment to complete..."
+              echo "Waiting for deployment rollout..."
               kubectl rollout status deployment/nodejs-app -n ${KUBE_NAMESPACE} --timeout=120s
             '''
           }
@@ -184,6 +193,7 @@ EOF
     always {
       container('jnlp') {
         sh 'rm -rf /tmp/buildkit-cache/*'
+        sh 'rm -rf ${BUILDKIT_CONFIG_DIR}'
       }
     }
     success {
@@ -193,12 +203,8 @@ EOF
           variable: 'KUBECONFIG_FILE'
         )]) {
           sh '''
-            mkdir -p ~/.kube
-            cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
-            chmod 600 "${KUBECONFIG}"
-            
-            echo "Deployment successful!"
-            kubectl get deployments,svc -n ${KUBE_NAMESPACE}
+            echo "=== Deployment Successful ==="
+            kubectl get deployments,svc,pods -n ${KUBE_NAMESPACE}
           '''
         }
       }
@@ -210,20 +216,16 @@ EOF
           variable: 'KUBECONFIG_FILE'
         )]) {
           sh '''
-            mkdir -p ~/.kube
-            cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
-            chmod 600 "${KUBECONFIG}"
+            echo "=== Cluster Status ==="
+            kubectl get all -n ${KUBE_NAMESPACE} || true
             
-            echo "=== Deployment failed. Cluster status ==="
-            kubectl get all -n ${KUBE_NAMESPACE}
-            
-            echo "=== Deployment description ==="
+            echo "=== Deployment Description ==="
             kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE} || true
             
-            echo "=== Pod logs ==="
+            echo "=== Pod Logs ==="
             kubectl logs -l app=nodejs-app -n ${KUBE_NAMESPACE} --tail=50 || true
             
-            echo "=== Events ==="
+            echo "=== Recent Events ==="
             kubectl get events -n ${KUBE_NAMESPACE} --sort-by='.lastTimestamp' | tail -n 20 || true
           '''
         }
