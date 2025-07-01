@@ -11,6 +11,7 @@ spec:
   securityContext:
     runAsUser: 1000
     fsGroup: 1000
+  serviceAccountName: jenkins-agent
   dnsPolicy: None
   dnsConfig:
     nameservers:
@@ -58,7 +59,7 @@ spec:
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "default"
     KUBECONFIG = "/home/jenkins/.kube/config"
-    BUILDKIT_CONFIG_DIR = "/tmp/buildkit-config"
+    BUILDKIT_CONFIG_DIR = "/home/jenkins/.buildkit"
   }
 
   stages {
@@ -104,9 +105,11 @@ spec:
   insecure = false
 EOF
 
-              buildkitd --config ${BUILDKIT_CONFIG_DIR}/buildkitd.toml &
-              sleep 5
+              # Start BuildKit in rootless mode
+              buildkitd --config ${BUILDKIT_CONFIG_DIR}/buildkitd.toml --rootless &
+              sleep 10
 
+              # Build and push with Docker Hub credentials
               buildctl build \\
                 --frontend dockerfile.v0 \\
                 --local context=. \\
@@ -115,7 +118,8 @@ EOF
                 --export-cache type=local,dest=/tmp/buildkit-cache \\
                 --import-cache type=local,src=/tmp/buildkit-cache \\
                 --opt registry.username=${DOCKER_USER} \\
-                --opt registry.password=${DOCKER_PASS}
+                --opt registry.password=${DOCKER_PASS} \\
+                --addr unix:///run/user/1000/buildkit/buildkitd.sock
             '''
           }
         }
@@ -130,12 +134,12 @@ EOF
             variable: 'KUBECONFIG_FILE'
           )]) {
             sh '''
-              # Ensure .kube directory exists and has correct permissions
-              mkdir -p /home/jenkins/.kube
+              # Ensure .kube directory exists
+              mkdir -p $(dirname ${KUBECONFIG})
               cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
               chmod 600 "${KUBECONFIG}"
 
-              echo "Applying deployment..."
+              # Apply Kubernetes manifests
               kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -180,8 +184,8 @@ spec:
   type: LoadBalancer
 EOF
 
-              echo "Waiting for deployment rollout..."
-              kubectl rollout status deployment/nodejs-app -n ${KUBE_NAMESPACE} --timeout=120s
+              # Verify deployment
+              kubectl rollout status deployment/nodejs-app -n ${KUBE_NAMESPACE} --timeout=300s
             '''
           }
         }
@@ -192,8 +196,10 @@ EOF
   post {
     always {
       container('jnlp') {
-        sh 'rm -rf /tmp/buildkit-cache/*'
-        sh 'rm -rf ${BUILDKIT_CONFIG_DIR}'
+        sh '''
+          rm -rf /tmp/buildkit-cache/*
+          rm -rf ${BUILDKIT_CONFIG_DIR}
+        '''
       }
     }
     success {
@@ -205,29 +211,34 @@ EOF
           sh '''
             echo "=== Deployment Successful ==="
             kubectl get deployments,svc,pods -n ${KUBE_NAMESPACE}
+            echo "Service URL:"
+            kubectl get svc nodejs-service -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
           '''
         }
       }
     }
     failure {
       container('kubectl') {
-        withCredentials([file(
-          credentialsId: 'kubernetes_file',
-          variable: 'KUBECONFIG_FILE'
-        )]) {
-          sh '''
-            echo "=== Cluster Status ==="
-            kubectl get all -n ${KUBE_NAMESPACE} || true
-            
-            echo "=== Deployment Description ==="
-            kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE} || true
-            
-            echo "=== Pod Logs ==="
-            kubectl logs -l app=nodejs-app -n ${KUBE_NAMESPACE} --tail=50 || true
-            
-            echo "=== Recent Events ==="
-            kubectl get events -n ${KUBE_NAMESPACE} --sort-by='.lastTimestamp' | tail -n 20 || true
-          '''
+        script {
+          try {
+            withCredentials([file(
+              credentialsId: 'kubernetes_file',
+              variable: 'KUBECONFIG_FILE'
+            )]) {
+              sh '''
+                echo "=== Cluster Status ==="
+                kubectl get pods -n ${KUBE_NAMESPACE} || true
+                
+                echo "=== Deployment Description ==="
+                kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE} || true
+                
+                echo "=== Pod Logs ==="
+                kubectl logs -l app=nodejs-app -n ${KUBE_NAMESPACE} --tail=50 || true
+              '''
+            }
+          } catch (Exception e) {
+            echo "Error collecting failure diagnostics: ${e.toString()}"
+          }
         }
       }
     }
