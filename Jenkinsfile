@@ -44,8 +44,8 @@ spec:
   }
 
   environment {
-    // Updated to use "nocnex/nodejs"
-    DOCKER_IMAGE = "nocnex/nodejs"
+    // Updated to use "nocnex/nodejs-app-v2"
+    DOCKER_IMAGE = "nocnex/nodejs-app-v2"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "default"
   }
@@ -195,7 +195,7 @@ EOF
     }
     success {
       container('jnlp') {
-        withCredentials([kubeconfigFile(credentialsId: 'subarentest', variable: 'KUBECONFIG')]) {
+        withCredentials([kubeconfigFile(credentialsId: 'kubernetes_file', variable: 'kubernetes_file')]) {
           sh '''
             echo "Deployment successful!"
             kubectl get svc nodejs-service -n ${KUBE_NAMESPACE}
@@ -205,7 +205,7 @@ EOF
     }
     failure {
       container('jnlp') {
-        withCredentials([kubeconfigFile(credentialsId: 'subarentest', variable: 'KUBECONFIG')]) {
+        withCredentials([kubeconfigFile(credentialsId: 'kubernetes_file', variable: 'kubernetes_file')]) {
           sh '''
             echo "Deployment failed. Checking logs:"
             kubectl describe deployment/nodejs-app -n ${KUBE_NAMESPACE}
