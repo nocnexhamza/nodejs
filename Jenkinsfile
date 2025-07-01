@@ -131,8 +131,8 @@ EOF
       steps {
         container('jnlp') {
           withCredentials([kubeconfigFile(
-            credentialsId: 'subarentest',
-            variable: 'KUBECONFIG'
+            credentialsId: 'kubernetes_file',
+            variable: 'kubernetes_file'
           )]) {
             sh '''
               kubectl apply -f - <<EOF
